@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ML Model Local Demo</title>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f7f6;
+            color: #333;
+        }
+
+        .container {
+            max-width: 700px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: #fff;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+        }
+
+        h1,
+        h2 {
+            border-bottom: 2px solid #01796F;
+            padding-bottom: 5px;
+            color: #01796F;
+        }
+
+        textarea {
+            width: 100%;
+            height: 80px;
+            box-sizing: border-box;
+            /* Fixes padding issue */
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            padding: 8px;
+            font-size: 1em;
+            margin-top: 10px;
+        }
+
+        button {
+            display: block;
+            width: 100%;
+            padding: 12px;
+            font-size: 1.1em;
+            font-weight: bold;
+            color: #fff;
+            background-color: #01796F;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 15px;
+            transition: background-color 0.2s;
+        }
+
+        button:hover {
+            background-color: #043927;
+        }
+
+        button:disabled {
+            background-color: #9E9E9E;
+            /* Gray background */
+            cursor: not-allowed;
+        }
+
+        #result-output {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #333;
+            text-align: center;
+        }
+
+        #console-output {
+            background-color: #2b2b2b;
+            color: #00ff00;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: "Courier New", monospace;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <h1>ML Model Local Demo</h1>
+        <p>Enter symptoms (e.g., "fever, body aches") to test the local ML model. The AI API will NOT be called.</p>
+
+        <label for="symptoms-input"><strong>Symptom Input:</strong></label>
+        <textarea id="symptoms-input">fever, chills, body aches, dry cough</textarea>
+
+        <button id="predict-button" disabled>Loading Model...</button>
+
+        <h2>Detected Disease:</h2>
+        <p id="result-output">---</p>
+
+        <h2>Backend Log:</h2>
+        <pre id="console-output"></pre>
+    </div>
+
+    <script>
+        // --- 1. Get references to our HTML elements ---
+        const button = document.getElementById('predict-button');
+        const symptomInput = document.getElementById('symptoms-input');
+        const resultOutput = document.getElementById('result-output');
+        const consoleOutput = document.getElementById('console-output');
+
+        // --- 2. Global variables for our model files ---
+        let symptomModel;
+        let modelVocab = [];
+        let modelDiseaseNames = [];
+        let modelLoaded = false;
+
+        /**
+         * A helper function to log messages to both
+         * the browser console AND our on-screen "Backend Log".
+         */
+        function log(message) {
+            console.log(message); // Log to the real F12 console
+            consoleOutput.textContent += `> ${message}\n`; // Log to the screen
+            consoleOutput.scrollTop = consoleOutput.scrollHeight; // Auto-scroll to bottom
+        }
+
+        /**
+         * Loads all the model files from the /model/ folder
+         */
+        async function loadModel() {
+            log("Page loaded. Starting model load...");
+            try {
+                // We point to the 'model' folder you created
+                log("Loading model from 'model/model.json'...");
+                symptomModel = await tf.loadLayersModel('model/model.json');
+                log("...model.json loaded.");
+
+                log("Loading symptoms from 'model/vocab.json'...");
+                const vocabResponse = await fetch('model/vocab.json');
+                modelVocab = await vocabResponse.json();
+                log(`...vocab.json loaded. Found ${modelVocab.length} symptoms.`);
+
+                log("Loading diseases from 'model/disease_names.json'...");
+                const diseasesResponse = await fetch('model/disease_names.json');
+                modelDiseaseNames = await diseasesResponse.json();
+                log(`...disease_names.json loaded. Found ${modelDiseaseNames.length} diseases.`);
+
+                modelLoaded = true;
+                log("✅ Model is fully loaded and ready.");
+
+                // Enable the button and change its text
+                button.disabled = false;
+                button.textContent = "Detect Disease (Offline)";
+
+            } catch (err) {
+                log("❌ CRITICAL: Error loading model:");
+                log(err.message);
+
+                // Show error on button
+                button.disabled = true;
+                button.textContent = "Model Failed to Load. Check Console.";
+                button.style.backgroundColor = "#D32F2F"; // Make button red
+            }
+        }
+
+        /**
+         * Converts text ("fever, cough") into a number array ([1, 1, 0...])
+         */
+        function preprocess(symptomsText) {
+            log("Preprocessing text: '" + symptomsText + "'");
+            const s = symptomsText.toLowerCase();
+            const symptomVector = new Array(modelVocab.length).fill(0);
+
+            for (let i = 0; i < modelVocab.length; i++) {
+                if (s.includes(modelVocab[i])) {
+                    symptomVector[i] = 1;
+                    log(`...Found symptom: '${modelVocab[i]}'`);
+                }
+            }
+            log("...Preprocessing complete.");
+            return symptomVector;
+        }
+
+        /**
+         * Runs the ML model to get a prediction
+         */
+        async function detectDisease(symptoms) {
+            if (!modelLoaded) {
+                log("Error: Model not loaded.");
+                return "Error: Model not loaded";
+            }
+
+            log("Starting ML prediction...");
+
+            // 1. Preprocess the text
+            const preprocessedSymptoms = preprocess(symptoms);
+
+            // 2. Convert to a Tensor
+            const inputTensor = tf.tensor2d([preprocessedSymptoms]);
+
+            // 3. Make the prediction
+            const prediction = symptomModel.predict(inputTensor);
+
+            // 4. Get the results
+            const probabilities = await prediction.data();
+            const predictedIndex = tf.argMax(prediction, 1).dataSync()[0];
+            const detectedDisease = modelDiseaseNames[predictedIndex];
+
+            log(`...Prediction index: ${predictedIndex}`);
+            log(`...Prediction complete. Disease: ${detectedDisease}`);
+
+            // 5. Clean up memory
+            inputTensor.dispose();
+            prediction.dispose();
+
+            return detectedDisease;
+        }
+
+        // --- 3. Add the click event listener to the button ---
+        button.addEventListener('click', async () => {
+            // Clear the old logs and result
+            consoleOutput.textContent = '';
+            resultOutput.textContent = '---';
+
+            log("Button clicked. Starting process...");
+            const symptoms = symptomInput.value;
+
+            if (symptoms.trim().length < 5) {
+                log("Error: Please enter symptoms.");
+                resultOutput.textContent = "Please enter symptoms";
+                return;
+            }
+
+            // This is the main function call
+            const disease = await detectDisease(symptoms);
+
+            // Show the final result
+            resultOutput.textContent = disease;
+            log("✅ Process complete.");
+        });
+
+        // --- 4. Start loading the model as soon as the page opens ---
+        loadModel();
+
+    </script>
+</body>
+
+</html>
